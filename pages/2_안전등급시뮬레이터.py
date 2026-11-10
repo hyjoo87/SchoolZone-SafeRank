@@ -41,7 +41,7 @@ def load_and_preprocess_data():
             
     df['High_Risk'] = df.apply(define_high_risk, axis=1)
     
-    # 시도명 추출 (소재지도로명주소에서 앞 두 글자 또는 공백 기준 분리)
+    # 시도명 추출 (소재지도로명주소에서 공백 기준 분리)
     def extract_sido(addr):
         if pd.isna(addr):
             return "기타"
@@ -86,26 +86,21 @@ st.markdown("---")
 st.subheader("📋 테스트 데이터 개요")
 st.info(f"테스트용 구역 총 개수: **{total_test_count:,}개** | 그중 실제 고위험 구역 개수: **{actual_high_risk_count:,}개**")
 
-# 혼동행렬 및 지표 계산 헬퍼 함수 (이진 분류: 0=안전/저위험, 1=고위험)
-# 행: 실제 (0, 1), 열: 예측 (0, 1)
-# [[TN, FP],
-#  [FN, TP]]
+# 혼동행렬 및 지표 계산 함수 (문법 오류 수정 완료)
 def compute_metrics_and_matrix(y_true, y_pred):
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     
     acc = accuracy_score(y_true, y_pred)
-    # 재현율 분모: 실제 고위험 구역 수 (tp + fn)
     rec = recall_score(y_true, y_pred, zero_division=0)
-    # 정밀도 분모: 고위험 구역이라 예측한 수 (tp + fp)
     prec = precision_score(y_true, y_pred, zero_division=0)
     
-    # F1 계산
-    if (prec + ric_sum := (prec + rec)) == 0:
+    prec_rec_sum = prec + rec
+    if prec_rec_sum == 0:
         f1 = 0.0
         f1_str = "계산할 수 없음"
     else:
-        f1 = 2 * prec * rec / (prec + rec)
+        f1 = 2 * prec * rec / prec_rec_sum
         f1_str = f"{f1:.4f}"
         
     prec_str = f"{prec:.4f}" if (tp + fp) > 0 else "계산할 수 없음"
@@ -129,7 +124,6 @@ col1, col2 = st.columns(2)
 
 def display_confusion_matrix_table(res, title):
     st.markdown(f"**{title}**")
-    # 행: 실제, 열: 예측
     cm_data = {
         "예측: 안전(0)": [f"TN: {res['tn']:,}", f"FN: {res['fn']:,}"],
         "예측: 고위험(1)": [f"FP: {res['fp']:,}", f"TP: {res['tp']:,}"],
@@ -165,17 +159,13 @@ selected_model_name = st.selectbox(
 
 chosen_preds = y_pred_rf if "랜덤 포레스트" in selected_model_name else y_pred_lr
 
-# 테스트 데이터 인덱스에 맞춘 데이터프레임 구성
 test_df = df.loc[X_test.index].copy()
 test_df['Actual'] = y_test
 test_df['Pred'] = chosen_preds
 
-# 왼쪽: 실제 고위험(1)인데 안전(0)으로 예측한 곳 (놓친 위험 구역 -> FN)
 missed_risk_df = test_df[(test_df['Actual'] == 1) & (test_df['Pred'] == 0)].copy()
-# 오른쪽: 실제 안전(0)인데 고위험(1)으로 예측한 곳 (헛짚은 구역 -> FP)
 false_alarm_df = test_df[(test_df['Actual'] == 0) & (test_df['Pred'] == 1)].copy()
 
-# 위험도 순서 정렬 (도로 폭이 넓고 CCTV 대수가 적을수록 위험도가 높다고 가정하여 정렬)
 missed_risk_df['Risk_Score'] = missed_risk_df['보호구역도로폭_num'] - (missed_risk_df['CCTV설치대수'] * 0.5)
 missed_risk_df = missed_risk_df.sort_values(by='Risk_Score', ascending=False)
 
@@ -190,11 +180,9 @@ def render_error_list(sub_df, title, total_count_val, fn_fp_label):
     
     display_df = sub_df.head(20).copy()
     
-    # 필요한 컬럼만 보기 좋게 정리
     display_table = pd.DataFrame({
         "구역명(시설명)": display_df['대상시설명'],
         "시도명": display_df['시도명'],
-        "제한속도": display_df['CCTV설치여부'], # 임시 컬럼 매칭 또는 원본 데이터 확인
         "CCTV 설치 여부": display_df['CCTV설치여부'],
         "도로 폭(m)": display_df['보호구역도로폭_num']
     }).reset_index(drop=True)
@@ -206,7 +194,7 @@ def render_error_list(sub_df, title, total_count_val, fn_fp_label):
 with col_l:
     render_error_list(
         missed_risk_df, 
-        "오른쪽/왼쪽 선택: 놓친 위험 구역 (실제 고위험 ➔ 예측 안전)", 
+        "놓친 위험 구역 (실제 고위험 ➔ 예측 안전)", 
         len(missed_risk_df), 
         "FN"
     )
@@ -214,7 +202,7 @@ with col_l:
 with col_r:
     render_error_list(
         false_alarm_df, 
-        "오른쪽/왼쪽 선택: 헛짚은 구역 (실제 안전 ➔ 예측 고위험)", 
+        "헛짚은 구역 (실제 안전 ➔ 예측 고위험)", 
         len(false_alarm_df), 
         "FP"
     )
@@ -232,7 +220,6 @@ with col_s2:
 with col_s3:
     sim_road_width = st.slider("보호구역 도로 폭 (m)", min_value=3.0, max_value=30.0, value=10.0, step=0.5)
 
-# 안전 점수 산출 로직 (도로 폭이 넓고 제한속도가 높으며 CCTV가 적을수록 안전 점수 하락)
 base_score = 100
 penalty_width = max(0, (sim_road_width - 8) * 2.5)
 penalty_speed = (sim_speed_limit - 30) * 0.8
@@ -249,7 +236,6 @@ elif safety_score >= 50:
 else:
     st.error("🚨 **고위험 구역:** 즉각적인 과속방지턱 설치, 방호울타리 확충 및 단속 카메라 증설이 필요합니다!")
 
-# Plotly를 활용한 시각화 게이지 차트
 fig_gauge = go.Figure(go.Indicator(
     mode = "gauge+number",
     value = safety_score,
